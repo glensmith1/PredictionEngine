@@ -11,15 +11,16 @@ from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.svm import SVC
 from sklearn.cross_validation import KFold
-from sklearn.metrics import accuracy_score
 
-def featureEngineering(file, ageCut=10, nlCut=10, notUsed=['PassengerId', 'Name', 'Ticket', 'Cabin', 'SibSp']):
+def featureEngineering(file, ageCut=0, nlCut=0, notUsed=['PassengerId', 'Name', 'Ticket', 'Cabin', 'SibSp']):
     ''' Loads a file for data enigineering purposes '''
 
-    def catNameLength(data):
+    def catNameLength(data, nlCut):
         ''' Create name_length and put into categories '''
         nameLength = [len(name) for name in data]
-        return pd.cut(nameLength, nlCut, labels=np.array(range(nlCut)))
+        if nlCut < 1:
+            nlCut = max(nameLength)
+        return pd.cut(nameLength, nlCut, labels=np.array(range(nlCut))).astype(int)
 
     def catFare(indata):
         ''' Categorize fare (some are null and are set to defaults) '''
@@ -31,7 +32,7 @@ def featureEngineering(file, ageCut=10, nlCut=10, notUsed=['PassengerId', 'Name'
                 for fare in data]
         return data
         
-    def catAge(indata):
+    def catAge(indata, ageCut):
         ''' Categorize ages (some are null and are set to defaults)  '''
         data   = indata.copy()
         ageAvg = data.mean()
@@ -39,7 +40,9 @@ def featureEngineering(file, ageCut=10, nlCut=10, notUsed=['PassengerId', 'Name'
         nans   = np.isnan(data)
         toRepl = nans.sum()
         data[nans] = np.random.randint(ageAvg-ageStd, ageAvg+ageStd, toRepl)
-        return pd.cut(data, ageCut, labels=np.array(range(ageCut)))
+        if ageCut < 1:
+            ageCut = data.max()
+        return pd.cut(data, ageCut, labels=np.array(range(ageCut))).astype(int)
         
     def catTitle(data):
         ''' Create a title and categorize '''
@@ -70,13 +73,13 @@ def featureEngineering(file, ageCut=10, nlCut=10, notUsed=['PassengerId', 'Name'
         return titleCat
  
     data = pd.read_csv(file).copy()
-    data['Name_length'] = catNameLength(data['Name'])
+    data['Name_length'] = catNameLength(data['Name'], nlCut)
     data['Has_Cabin'] = data['Cabin'].map(lambda x: 0 if type(x) == float else 1)
     data['FamilySize'] = data['SibSp'] + data['Parch'] + 1
     data['IsAlone'] = data['FamilySize'].apply(lambda x: 1 if x == 1 else 0)
     data['Embarked'] = data['Embarked'].map( {'S': 0, 'C': 1, 'Q': 2, np.nan: 0} )
     data['Fare'] = catFare(data['Fare'])
-    data['Age'] = catAge(data['Age'])
+    data['Age'] = catAge(data['Age'], ageCut)
     data['Title'] = catTitle(data['Name'])
     data['Sex'] = data['Sex'].map( {'female': 0, 'male': 1} )
     data = data.drop(notUsed, axis = 1)
@@ -85,8 +88,8 @@ def featureEngineering(file, ageCut=10, nlCut=10, notUsed=['PassengerId', 'Name'
     
 class SklearnHelper(object):
     ''' Extends the sklearn classifiers '''
-    def __init__(self, clf, seed=0, params=None):
-        params['random_state'] = seed
+    
+    def __init__(self, clf, params=None):
         self.clf = clf(**params)
 
     def train(self, x_train, y_train):
@@ -103,6 +106,7 @@ class SklearnHelper(object):
 
 class TrainingEngine(object):
     ''' Trains the data '''
+   
     def __init__(self, data, folds=5, seed=0, predCol='Survived'):
         self.data       = data.copy()
         self.nTrain     = len(self.data)
@@ -124,41 +128,39 @@ class TrainingEngine(object):
                            'Verbose': 0,
                            'MinChildWeight': 2,
                            'Gamma': 0.9}
-        self.defineModels()
 
     def defineModels(self):
         ''' This method sets the models this will use '''
-        # First Level
+        
         self.models = {'RandomForest': SklearnHelper(clf=RandomForestClassifier,
-                                                     seed=self.params['Seed'],
                                                      params={'n_jobs': -1,
                                                              'n_estimators': self.params['RFEstimators'],
                                                              'max_depth': self.params['RFMaxDepth'],
                                                              'min_samples_leaf': self.params['MinLeaf'],
-                                                             'verbose': self.params['Verbose']}),
+                                                             'verbose': self.params['Verbose'],
+                                                             'random_state': self.params['Seed']}),
                          'ExtraTrees': SklearnHelper(clf=ExtraTreesClassifier,
-                                                     seed=self.params['Seed'],
                                                      params={'n_jobs': -1,
                                                              'n_estimators': self.params['ETEstimators'],
                                                              'max_depth': self.params['ETMaxDepth'],
                                                              'min_samples_leaf': self.params['MinLeaf'],
-                                                             'verbose': self.params['Verbose']}),
+                                                             'verbose': self.params['Verbose'],
+                                                             'random_state': self.params['Seed']}),
                            'AdaBoost': SklearnHelper(clf=AdaBoostClassifier,
-                                                     seed=self.params['Seed'],
                                                      params={'n_estimators': self.params['ABEstimators'],
-                                                             'learning_rate': self.params['LearnRate'][0]}),
+                                                             'learning_rate': self.params['LearnRate'][0],
+                                                             'random_state': self.params['Seed']}),
                       'GradientBoost': SklearnHelper(clf=GradientBoostingClassifier,
-                                                     seed=self.params['Seed'],
                                                      params={'n_estimators': self.params['GBEstimators'],
                                                              'max_depth': self.params['GBMaxDepth'],
                                                              'min_samples_leaf': self.params['MinLeaf'],
-                                                             'verbose': self.params['Verbose']}),                     
+                                                             'verbose': self.params['Verbose'],
+                                                             'random_state': self.params['Seed']}),                     
                       'SupportVector': SklearnHelper(clf=SVC,
-                                                     seed=self.params['Seed'],
                                                      params={'kernel' : 'linear',
-                                                             'C' : 0.025}),
+                                                             'C' : 0.025,
+                                                             'random_state': self.params['Seed']}),
                             'XGBoost': SklearnHelper(clf=XGBClassifier,
-                                                     seed=self.params['Seed'],
                                                      params={'nthread': -1,
                                                              'n_estimators': self.params['XGEstimators'],
                                                              'max_depth': self.params['XGMaxDepth'],
@@ -168,12 +170,12 @@ class TrainingEngine(object):
                                                              'subsample': 0.8,
                                                              'colsample_bytree': 0.8,
                                                              'objective': 'binary:logistic',
-                                                             'scale_pos_weight': 1})}
-
-
+                                                             'scale_pos_weight': 1,
+                                                             'seed': self.params['Seed']})}
 
     def firstLevelTrainer(self, exclude=None):
         ''' This trains the data for the first level models '''
+        
         def oneModel(clf):
             [clf.train(x_train[index], y_train[index]) for index, _ in self.kf]
 
@@ -186,15 +188,11 @@ class TrainingEngine(object):
         # Train all first level model
         {model: oneModel(clf) for model, clf in models.items()}
         
-        # Training prediction to get accuracy score
-        predictions = self.firstLevelPredict()
-        self.accuracyScore = {model: accuracy_score(y_train, predictions[model])
-                             for model in predictions.columns}
-            
-        return predictions
+        return self.firstLevelPredict()
 
     def firstLevelPredict(self, indata=None, models=None):
         ''' Prediction using first level models '''
+        
         def oneModel (clf):
             predictions = np.array([clf.predict(features) 
                                     for _, test_index in self.kf])
@@ -208,10 +206,8 @@ class TrainingEngine(object):
             models = self.models
         features = indata[self.featureIdx]
   
-        # Predict for each model
-        predictions = {model: oneModel(clf) for model, clf in models.items()}
-
         # Put changes into pandas dataframe
+        predictions = {model: oneModel(clf) for model, clf in models.items()}
         {indata.insert(0, column=model, value=series.ravel())
          for model, series in predictions.items()}
 
@@ -221,7 +217,7 @@ class TrainingEngine(object):
         ''' Train second level using second level model '''
 
         # Some parameters for training
-        gbm     = self.model[stackModel]
+        gbm = self.stackModel
         columns = [model for model in self.models if model not in stackModel]
         x_train = np.stack(indata[columns].to_dict('list').values(), axis=1)
         y_train = indata[self.predCol].values
@@ -230,36 +226,25 @@ class TrainingEngine(object):
         gbm = gbm.fit(x_train, y_train)
         
         # Predict for this model
-        indata = self.secondLevelPredict(indata, stackModel)
-        self.accuracyScore[stackModel] = accuracy_score(y_train, indata[stackModel])
+        indata = self.secondLevelPredict(indata, gbm, stackModel)
         
         # Save this model
         self.stackModel = gbm
 
         return indata
 
-    def secondLevelPredict(self, indata, model, stackModel='XGBoost'):
+    def secondLevelPredict(self, indata, gbm, stackModel='XGBoost'):
         ''' Predictions using second level model '''
 
         # Some parameters for prediction        
         columns     = [model for model in self.models if model not in stackModel]
         features    = np.stack(indata[columns].to_dict('list').values(), axis=1)
-        
+
         # Make predictions
         predictions = gbm.predict(features)
 
         # Insert predictions into predictions tables
         indata = indata.drop(stackModel, axis=1, errors='ignore')
-        indata.insert(0, self.stackModel, predictions)
+        indata.insert(0, stackModel, predictions)
 
         return indata
-        
-def BuildTruthTable(indata, inrun, actual):
-    ''' Function to build a truth table for this input data '''
-
-    def getSum(model):
-        return accuracy_score(indata[actual], indata[model])
-
-    models = [model for model in indata.columns if model not in actual]
-        
-    return {inrun, {model: getSum(model) for model in models}}
