@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import re
 import xgboost as xgb
+import warnings as warn
 from xgboost.sklearn import XGBClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.ensemble import AdaBoostClassifier
@@ -41,7 +42,7 @@ def featureEngineering(file, ageCut=0, nlCut=0, notUsed=['PassengerId', 'Name', 
         toRepl = nans.sum()
         data[nans] = np.random.randint(ageAvg-ageStd, ageAvg+ageStd, toRepl)
         if ageCut < 1:
-            ageCut = data.max()
+            ageCut = data.max().astype(int)
         return pd.cut(data, ageCut, labels=np.array(range(ageCut))).astype(int)
         
     def catTitle(data):
@@ -72,7 +73,15 @@ def featureEngineering(file, ageCut=0, nlCut=0, notUsed=['PassengerId', 'Name', 
         titleCat[titleNan] = 0
         return titleCat
  
-    data = pd.read_csv(file).copy()
+    if isinstance(file, pd.DataFrame):
+        data = file.copy()
+    else:
+        try:
+            data = pd.read_csv(file).copy()
+        except:
+            warn.warn('File must be a dataframe or a file')
+            return
+        
     data['Name_length'] = catNameLength(data['Name'], nlCut)
     data['Has_Cabin'] = data['Cabin'].map(lambda x: 0 if type(x) == float else 1)
     data['FamilySize'] = data['SibSp'] + data['Parch'] + 1
@@ -118,20 +127,25 @@ class TrainingEngine(object):
                            'ETEstimators': 30,
                            'ABEstimators': 120,
                            'GBEstimators': 40,
-                           'XGEstimators': 160,
+                           'XGEstimators': 1000,
+                           'LearnRate': [0.7, 0.1],
                            'RFMaxDepth': 6,
                            'ETMaxDepth': 8,
                            'GBMaxDepth': 5,
-                           'XGMaxDepth': 4,
-                           'LearnRate': [0.7, 0.1],
+                           'XGMaxDepth': 2,
+                           'MinChildWeight': 1,
+                           'Gamma': 0.8,
+                           'ColSample': 0.6,
+                           'SubSample': 0.6,
                            'MinLeaf': 2,
-                           'Verbose': 0,
-                           'MinChildWeight': 2,
-                           'Gamma': 0.9}
+                           'Verbose': 0}
+        self.tuneXGB = False
+        self.earlyStoppingRounds = 50
 
     def defineModels(self):
         ''' This method sets the models this will use '''
         
+        # First level
         self.models = {'RandomForest': SklearnHelper(clf=RandomForestClassifier,
                                                      params={'n_jobs': -1,
                                                              'n_estimators': self.params['RFEstimators'],
@@ -159,19 +173,16 @@ class TrainingEngine(object):
                       'SupportVector': SklearnHelper(clf=SVC,
                                                      params={'kernel' : 'linear',
                                                              'C' : 0.025,
-                                                             'random_state': self.params['Seed']}),
-                            'XGBoost': SklearnHelper(clf=XGBClassifier,
-                                                     params={'nthread': -1,
-                                                             'n_estimators': self.params['XGEstimators'],
-                                                             'max_depth': self.params['XGMaxDepth'],
-                                                             'learning_rate': self.params['LearnRate'][1],
-                                                             'min_child_weight': self.params['MinChildWeight'],
-                                                             'gamma': self.params['Gamma'],                        
-                                                             'subsample': 0.8,
-                                                             'colsample_bytree': 0.8,
-                                                             'objective': 'binary:logistic',
-                                                             'scale_pos_weight': 1,
-                                                             'seed': self.params['Seed']})}
+                                                             'random_state': self.params['Seed']})}
+
+        # Second level
+        self.stackModel = XGBClassifier(n_estimators=self.params['XGEstimators'],
+                                        min_child_weight=self.params['MinChildWeight'],
+                                        max_depth=self.params['XGMaxDepth'],
+                                        gamma=self.params['Gamma'],
+                                        colsample_bytree=self.params['ColSample'],
+                                        subsample=self.params['SubSample'],
+                                        nthread=-1)
 
     def firstLevelTrainer(self, exclude=None):
         ''' This trains the data for the first level models '''
@@ -219,17 +230,29 @@ class TrainingEngine(object):
         # Some parameters for training
         gbm = self.stackModel
         columns = [model for model in self.models if model not in stackModel]
-        x_train = np.stack(indata[columns].to_dict('list').values(), axis=1)
+        x_train = indata[columns].values
         y_train = indata[self.predCol].values
+        
+        # If tuning is true
+        if self.tuneXGB:
+            xgbParam = gbm.get_xgb_params()
+            xgbTrain = xgb.DMatrix(x_train, label=y_train)
+            cvResult = xgb.cv(xgbParam,
+                              xgbTrain,
+                              num_boost_round=self.params['XGEstimators'],
+                              nfold=len(self.kf),
+                              metrics='auc',
+                              early_stopping_rounds=self.earlyStoppingRounds,
+                              show_progress=False)
+            gbm.set_params(n_estimators = cvResult.shape[0])
+            self.params['XGEstimators'] = cvResult.shape[0]
 
         # Train this model
         gbm = gbm.fit(x_train, y_train)
+        self.stackModel = gbm
         
         # Predict for this model
         indata = self.secondLevelPredict(indata, gbm, stackModel)
-        
-        # Save this model
-        self.stackModel = gbm
 
         return indata
 
@@ -238,7 +261,7 @@ class TrainingEngine(object):
 
         # Some parameters for prediction        
         columns     = [model for model in self.models if model not in stackModel]
-        features    = np.stack(indata[columns].to_dict('list').values(), axis=1)
+        features    = indata[columns].values
 
         # Make predictions
         predictions = gbm.predict(features)
