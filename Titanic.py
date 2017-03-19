@@ -12,6 +12,7 @@ from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.svm import SVC
 from sklearn.cross_validation import KFold
+from sklearn.model_selection import GridSearchCV
 
 def featureEngineering(file, ageCut=0, nlCut=0, notUsed=['PassengerId', 'Name', 'Ticket', 'Cabin', 'SibSp']):
     ''' Loads a file for data enigineering purposes '''
@@ -79,7 +80,7 @@ def featureEngineering(file, ageCut=0, nlCut=0, notUsed=['PassengerId', 'Name', 
         try:
             data = pd.read_csv(file).copy()
         except:
-            warn.warn('File must be a dataframe or a file')
+            warn.warn('file must be a dataframe or a file')
             return
         
     data['Name_length'] = catNameLength(data['Name'], nlCut)
@@ -95,130 +96,109 @@ def featureEngineering(file, ageCut=0, nlCut=0, notUsed=['PassengerId', 'Name', 
     
     return data
     
-class SklearnHelper(object):
-    ''' Extends the sklearn classifiers '''
-    
-    def __init__(self, clf, params=None):
-        self.clf = clf(**params)
-
-    def train(self, x_train, y_train):
-        self.clf.fit(x_train, y_train)
-
-    def predict(self, x):
-        return self.clf.predict(x)
-    
-    def fit(self,x,y):
-        return self.clf.fit(x,y)
-    
-    def feature_importances(self,x,y):
-        return self.clf.fit(x,y).feature_importances_
-
 class TrainingEngine(object):
     ''' Trains the data '''
    
     def __init__(self, data, folds=5, seed=0, predCol='Survived'):
+        
         self.data       = data.copy()
         self.nTrain     = len(self.data)
         self.predCol    = predCol
         self.featureIdx = [column for column in data.columns if column != predCol] 
         self.kf         = KFold(self.nTrain, n_folds=folds, random_state=seed)
-        self.params     = {'Seed': seed,
-                           'RFEstimators': 90,
-                           'ETEstimators': 30,
-                           'ABEstimators': 120,
-                           'GBEstimators': 40,
-                           'XGEstimators': 1000,
-                           'LearnRate': [0.7, 0.1],
-                           'RFMaxDepth': 6,
-                           'ETMaxDepth': 8,
-                           'GBMaxDepth': 5,
-                           'XGMaxDepth': 2,
-                           'MinChildWeight': 1,
-                           'Gamma': 0.8,
-                           'ColSample': 0.6,
-                           'SubSample': 0.6,
-                           'MinLeaf': 2,
-                           'Verbose': 0}
-        self.tuneXGB = False
-        self.earlyStoppingRounds = 50
+        self.params     = {'Seed': seed}
+        self.tuneXGB    = False
+        self.levelOneEstimators = ['RandomForest',
+                                   'ExtraTrees',
+                                   'AdaBoost',
+                                   'GradientBoost',
+                                   'SupportVector']
+        self.levelTwoEstimators = ['XGBoost']
+        self.earlyStopping = 50
+        self.trainingAction = ['Tuning', 'Tuning']
 
-    def defineModels(self):
-        ''' This method sets the models this will use '''
-        
-        # First level
-        self.models = {'RandomForest': SklearnHelper(clf=RandomForestClassifier,
-                                                     params={'n_jobs': -1,
-                                                             'n_estimators': self.params['RFEstimators'],
-                                                             'max_depth': self.params['RFMaxDepth'],
-                                                             'min_samples_leaf': self.params['MinLeaf'],
-                                                             'verbose': self.params['Verbose'],
-                                                             'random_state': self.params['Seed']}),
-                         'ExtraTrees': SklearnHelper(clf=ExtraTreesClassifier,
-                                                     params={'n_jobs': -1,
-                                                             'n_estimators': self.params['ETEstimators'],
-                                                             'max_depth': self.params['ETMaxDepth'],
-                                                             'min_samples_leaf': self.params['MinLeaf'],
-                                                             'verbose': self.params['Verbose'],
-                                                             'random_state': self.params['Seed']}),
-                           'AdaBoost': SklearnHelper(clf=AdaBoostClassifier,
-                                                     params={'n_estimators': self.params['ABEstimators'],
-                                                             'learning_rate': self.params['LearnRate'][0],
-                                                             'random_state': self.params['Seed']}),
-                      'GradientBoost': SklearnHelper(clf=GradientBoostingClassifier,
-                                                     params={'n_estimators': self.params['GBEstimators'],
-                                                             'max_depth': self.params['GBMaxDepth'],
-                                                             'min_samples_leaf': self.params['MinLeaf'],
-                                                             'verbose': self.params['Verbose'],
-                                                             'random_state': self.params['Seed']}),                     
-                      'SupportVector': SklearnHelper(clf=SVC,
-                                                     params={'kernel' : 'linear',
-                                                             'C' : 0.025,
-                                                             'random_state': self.params['Seed']})}
+        # Classifiers
+        self.models = {'RandomForest':  RandomForestClassifier(n_jobs=-1,
+                                                               random_state=seed),
+                       'ExtraTrees':    ExtraTreesClassifier(n_jobs=-1,
+                                                             random_state=seed),
+                       'AdaBoost':      AdaBoostClassifier(random_state=seed),
+                       'GradientBoost': GradientBoostingClassifier(random_state=seed),
+                       'SupportVector': SVC(kernel='linear',
+                                            random_state=seed),
+                       'XGBoost':       XGBClassifier(nthread=-1,
+                                                      seed=seed)}
+                            
+        # Parameters
+        self.params = {'RandomForest':  {'max_depth': [3,6,9],
+                                         'n_estimators': [80,75,70]},
+                       'ExtraTrees':    {'max_depth': [7,8,9],
+                                         'n_estimators': [15,30,45]},
+                       'AdaBoost':      {'learning_rate': [1,.7,.4],
+                                         'n_estimators': [50,100,150]},
+                       'GradientBoost': {'learning_rate': [.1,.4,.7],
+                                         'max_depth': [3,6,9],
+                                         'n_estimators': [100,200,300]},
+                       'SupportVector': {'C': [.5,.75,.1,.05,.025]},
+                       'XGBoost':       {'n_estimators':[50,100,150],
+                                         'min_child_weight': [1,2,3], 
+                                         'max_depth': [2,5,8],
+                                         'gamma': [0,.4,.8],
+                                         'learning_rate':[.3,.4,.5]}}
+                       
+        # Hold output of grid search
+        self.grid = {}
+ 
 
-        # Second level
-        self.stackModel = XGBClassifier(n_estimators=self.params['XGEstimators'],
-                                        min_child_weight=self.params['MinChildWeight'],
-                                        max_depth=self.params['XGMaxDepth'],
-                                        gamma=self.params['Gamma'],
-                                        colsample_bytree=self.params['ColSample'],
-                                        subsample=self.params['SubSample'],
-                                        nthread=-1)
-
-    def firstLevelTrainer(self, exclude=None):
+    def tune(self, model, x, y, scoring='precision'):
+        ''' tune models '''
+        print(model, end=' ')
+        estimator = self.models[model]
+        tuning = self.params[model]
+        clf = GridSearchCV(estimator, tuning, cv=len(self.kf), scoring=scoring)
+        clf.fit(x, y)
+        return clf
+    
+    def firstLevelTrainer(self):
         ''' This trains the data for the first level models '''
         
-        def oneModel(clf):
-            [clf.train(x_train[index], y_train[index]) for index, _ in self.kf]
-
+        def oneModel(model):
+            clf = self.models[model]
+            if self.trainingAction[0] == 'Tuning':
+                tclf = self.tune(model, x_train, y_train)
+                clf.set_params(**tclf.best_params_)
+                self.grid[model] = tclf 
+            [clf.fit(x_train[index[1]], y_train[index[1]]) for index in self.kf]
+            
         # Some parameters for training
         indata   = self.data.copy()
-        models   = self.models
         x_train  = indata[self.featureIdx].values
         y_train  = indata[self.predCol].values
         
         # Train all first level model
-        {model: oneModel(clf) for model, clf in models.items()}
+        print('{} level 0:'.format(self.trainingAction[0]), end=' ')
+        [oneModel(model) for model in self.levelOneEstimators]
+        print()
         
-        return self.firstLevelPredict()
+        return self.firstLevelPredict(indata=indata)
 
-    def firstLevelPredict(self, indata=None, models=None):
+    def firstLevelPredict(self, indata, models=None):
         ''' Prediction using first level models '''
         
-        def oneModel (clf):
+        def oneModel (model):
+            clf = models[model]
             predictions = np.array([clf.predict(features) 
                                     for _, test_index in self.kf])
             predictions = predictions.mean(axis=0).astype(int)
             return predictions.flatten()
             
         # Some parameters for prediction
-        if not isinstance(indata, pd.DataFrame):
-            indata = self.data.copy()
         if not models:
             models = self.models
         features = indata[self.featureIdx]
   
         # Put changes into pandas dataframe
-        predictions = {model: oneModel(clf) for model, clf in models.items()}
+        predictions = {model: oneModel(model) for model in self.levelOneEstimators}
         {indata.insert(0, column=model, value=series.ravel())
          for model, series in predictions.items()}
 
@@ -228,31 +208,23 @@ class TrainingEngine(object):
         ''' Train second level using second level model '''
 
         # Some parameters for training
-        gbm = self.stackModel
-        columns = [model for model in self.models if model not in stackModel]
-        x_train = indata[columns].values
+        gbm     = self.models[stackModel]
+        x_train = indata[self.levelOneEstimators].values
         y_train = indata[self.predCol].values
         
-        # If tuning is true
-        if self.tuneXGB:
-            xgbParam = gbm.get_xgb_params()
-            xgbTrain = xgb.DMatrix(x_train, label=y_train)
-            cvResult = xgb.cv(xgbParam,
-                              xgbTrain,
-                              num_boost_round=self.params['XGEstimators'],
-                              nfold=len(self.kf),
-                              metrics='auc',
-                              early_stopping_rounds=self.earlyStoppingRounds,
-                              show_progress=False)
-            gbm.set_params(n_estimators = cvResult.shape[0])
-            self.params['XGEstimators'] = cvResult.shape[0]
+        # Tune
+        if self.trainingAction[1] == 'Tuning':
+            print('Tuning level 1:', end=' ')
+            tclf = self.tune(stackModel, x_train, y_train)
+            gbm.set_params(**tclf.best_params_)
+            self.grid[stackModel] = tclf 
 
-        # Train this model
+        # Train
         gbm = gbm.fit(x_train, y_train)
-        self.stackModel = gbm
+        self.models[stackModel] = gbm
         
         # Predict for this model
-        indata = self.secondLevelPredict(indata, gbm, stackModel)
+        indata = self.secondLevelPredict(indata, gbm)
 
         return indata
 
@@ -260,8 +232,7 @@ class TrainingEngine(object):
         ''' Predictions using second level model '''
 
         # Some parameters for prediction        
-        columns     = [model for model in self.models if model not in stackModel]
-        features    = indata[columns].values
+        features    = indata[self.levelOneEstimators].values
 
         # Make predictions
         predictions = gbm.predict(features)
